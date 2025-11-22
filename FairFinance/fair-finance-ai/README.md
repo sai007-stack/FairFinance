@@ -11,6 +11,9 @@ View reasons for approval or rejection
 Access employee and user dashboards
 Authenticate using a login system (developer can plug in any backend later)
 
+Hugging Face Model : Trained AI model on hugging model
+https://huggingface.co/spaces/saipranitha06/ethos_model
+
 Tech Stack :
 React (Frontend UI)
 TypeScript (Type-safe development)
@@ -43,4 +46,5 @@ Authentication can be integrated using:
 Firebase Auth
 JWT-based backend
 Supabase
+
 Clerk / Auth0 / NextAuth API
