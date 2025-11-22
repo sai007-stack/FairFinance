@@ -1,0 +1,1129 @@
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import * as z from "zod";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Shield, ArrowLeft, Loader2, Upload } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import { supabase } from "@/integrations/supabase/client";
+
+const loanSchema = z.object({
+  loanType: z.string().min(1, "Please select loan type"),
+  // Common fields for all loan types
+  name: z.string().optional(),
+  age: z.number().optional(),
+  gender: z.string().optional(),
+  aadharId: z.string()
+    .optional()
+    .refine((val) => {
+      if (!val) return true;
+      const cleaned = val.replace(/\s/g, '');
+      return /^\d{12}$/.test(cleaned);
+    }, { message: "Aadhar number must be exactly 12 digits" }),
+  // Home Loan fields
+  annualIncome: z.number().optional(),
+  loanAmount: z.number().optional(),
+  loanTerm: z.number().optional(),
+  cibilScore: z.number().optional(),
+  propertyValue: z.number().optional(),
+  downPayment: z.number().optional(),
+  monthlyExpenses: z.number().optional(),
+  // Personal Loan fields
+  existingEmis: z.number().optional(),
+  // Business Loan fields
+  businessRevenue: z.number().optional(),
+  businessProfit: z.number().optional(),
+  commercialPropertyValue: z.number().optional(),
+  // Educational Loan fields
+  tuitionFee: z.number().optional(),
+  courseDuration: z.number().optional(),
+  studentExpenses: z.number().optional(),
+  // Other fields
+  employmentStatus: z.string().optional(),
+  existingLoans: z.number().optional(),
+  savingsBalance: z.number().optional(),
+  // Document uploads (stored as file names or base64)
+  documents: z.any().optional(),
+}).refine((data) => {
+  if (data.loanType === "home-loan") {
+    return (
+      data.name !== undefined &&
+      data.age !== undefined &&
+      data.gender !== undefined &&
+      data.aadharId !== undefined &&
+      data.annualIncome !== undefined &&
+      data.loanAmount !== undefined &&
+      data.loanTerm !== undefined &&
+      data.cibilScore !== undefined &&
+      data.propertyValue !== undefined &&
+      data.downPayment !== undefined &&
+      data.monthlyExpenses !== undefined
+    );
+  }
+  if (data.loanType === "personal-loan") {
+    return (
+      data.name !== undefined &&
+      data.age !== undefined &&
+      data.gender !== undefined &&
+      data.aadharId !== undefined &&
+      data.annualIncome !== undefined &&
+      data.loanAmount !== undefined &&
+      data.loanTerm !== undefined &&
+      data.cibilScore !== undefined &&
+      data.monthlyExpenses !== undefined &&
+      data.existingEmis !== undefined
+    );
+  }
+  if (data.loanType === "business-loan") {
+    return (
+      data.name !== undefined &&
+      data.age !== undefined &&
+      data.gender !== undefined &&
+      data.aadharId !== undefined &&
+      data.annualIncome !== undefined &&
+      data.loanAmount !== undefined &&
+      data.loanTerm !== undefined &&
+      data.cibilScore !== undefined &&
+      data.businessRevenue !== undefined &&
+      data.businessProfit !== undefined &&
+      data.commercialPropertyValue !== undefined
+    );
+  }
+  if (data.loanType === "educational-loan") {
+    return (
+      data.name !== undefined &&
+      data.age !== undefined &&
+      data.gender !== undefined &&
+      data.aadharId !== undefined &&
+      data.annualIncome !== undefined &&
+      data.cibilScore !== undefined &&
+      data.tuitionFee !== undefined &&
+      data.courseDuration !== undefined &&
+      data.studentExpenses !== undefined
+    );
+  }
+  return true;
+}, {
+  message: "Please fill in all required fields",
+  path: ["loanType"],
+});
+
+type LoanFormData = z.infer<typeof loanSchema>;
+
+const LoanApplication = () => {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    watch,
+    formState: { errors },
+  } = useForm<LoanFormData>({
+    resolver: zodResolver(loanSchema),
+  });
+
+  const selectedLoanType = watch("loanType");
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    setUploadedFiles(files);
+  };
+
+  const uploadDocuments = async (loanId: string): Promise<string[]> => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) throw new Error("User not authenticated");
+
+    const uploadedPaths: string[] = [];
+
+    for (const file of uploadedFiles) {
+      const fileName = `${user.id}/${loanId}/${Date.now()}-${file.name}`;
+      
+      const { error: uploadError } = await supabase.storage
+        .from('loan-documents')
+        .upload(fileName, file);
+
+      if (uploadError) {
+        console.error("Upload error:", uploadError);
+        throw new Error(`Failed to upload ${file.name}`);
+      }
+
+      uploadedPaths.push(fileName);
+    }
+
+    return uploadedPaths;
+  };
+
+  const onSubmit = async (data: LoanFormData) => {
+    setIsSubmitting(true);
+    
+    try {
+      // Map fields based on loan type
+      let mappedData;
+      
+      if (data.loanType === "home-loan") {
+        mappedData = {
+          name: data.name,
+          age: data.age,
+          gender: data.gender,
+          income: data.annualIncome,
+          loanAmount: data.loanAmount,
+          loanTerm: data.loanTerm,
+          creditScore: data.cibilScore,
+          residentialAssetsValue: data.propertyValue,
+          commercialAssetsValue: 0,
+          luxuryAssetsValue: 0,
+          savingsBalance: data.downPayment,
+          loanType: data.loanType,
+          employmentStatus: "full-time",
+          existingLoans: 0,
+        };
+      } else if (data.loanType === "personal-loan") {
+        mappedData = {
+          name: data.name,
+          age: data.age,
+          gender: data.gender,
+          income: (data.annualIncome || 0) - (data.monthlyExpenses || 0) - (data.existingEmis || 0),
+          loanAmount: data.loanAmount,
+          loanTerm: data.loanTerm,
+          creditScore: data.cibilScore,
+          residentialAssetsValue: 0,
+          commercialAssetsValue: 0,
+          luxuryAssetsValue: 0,
+          savingsBalance: (data.annualIncome || 0) / 12,
+          loanType: data.loanType,
+          employmentStatus: "full-time",
+          existingLoans: 0,
+        };
+      } else if (data.loanType === "business-loan") {
+        mappedData = {
+          name: data.name,
+          age: data.age,
+          gender: data.gender,
+          income: (data.annualIncome || 0) + (data.businessRevenue || 0) + (data.businessProfit || 0),
+          loanAmount: data.loanAmount,
+          loanTerm: data.loanTerm,
+          creditScore: data.cibilScore,
+          residentialAssetsValue: 0,
+          commercialAssetsValue: data.commercialPropertyValue,
+          luxuryAssetsValue: 0,
+          savingsBalance: data.businessProfit,
+          loanType: data.loanType,
+          employmentStatus: "self-employed",
+          existingLoans: 0,
+        };
+      } else if (data.loanType === "educational-loan") {
+        mappedData = {
+          name: data.name,
+          age: data.age,
+          gender: data.gender,
+          income: data.annualIncome,
+          loanAmount: data.tuitionFee,
+          loanTerm: data.courseDuration,
+          creditScore: data.cibilScore,
+          residentialAssetsValue: 0,
+          commercialAssetsValue: 0,
+          luxuryAssetsValue: 0,
+          savingsBalance: data.studentExpenses,
+          loanType: data.loanType,
+          employmentStatus: "unemployed",
+          existingLoans: 0,
+        };
+      } else {
+        // For other loan types, pass data as-is (for future implementation)
+        mappedData = data;
+      }
+
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze-loan`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(mappedData),
+        }
+      );
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to process application');
+      }
+
+      const result = await response.json();
+      
+      // Upload documents if any
+      if (uploadedFiles.length > 0 && result.applicationId) {
+        try {
+          const documentPaths = await uploadDocuments(result.applicationId);
+          
+          // Save document metadata to database
+          for (let i = 0; i < documentPaths.length; i++) {
+            await supabase.from('loan_documents').insert({
+              loan_id: result.applicationId,
+              file_name: uploadedFiles[i].name,
+              file_path: documentPaths[i],
+              file_type: uploadedFiles[i].type,
+            });
+          }
+        } catch (uploadError) {
+          console.error("Document upload error:", uploadError);
+          toast({
+            title: "Warning",
+            description: "Application submitted but documents failed to upload.",
+            variant: "destructive",
+          });
+        }
+      }
+
+      // Navigate to results page with data
+      navigate('/result', { 
+        state: {
+          ...result,
+          dataUsed: mappedData,
+          loanId: result.applicationId,
+        }
+      });
+      
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to process your application. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-background to-secondary/30">
+      <header className="border-b border-border/50 bg-card/80 backdrop-blur-sm">
+        <div className="container mx-auto px-4 py-4 flex items-center gap-4">
+          <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <div className="flex items-center gap-2">
+            <Shield className="h-8 w-8 text-primary" />
+            <span className="text-2xl font-bold text-foreground">FairFinance</span>
+          </div>
+        </div>
+      </header>
+
+      <main className="container mx-auto px-4 py-12">
+        <Card className="max-w-2xl mx-auto p-8">
+          <h1 className="text-3xl font-bold mb-2 text-foreground">Loan Application</h1>
+          <p className="text-muted-foreground mb-8">
+            Fill out the form below for an instant AI-powered decision
+          </p>
+
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+            <div className="space-y-2">
+              <Label htmlFor="loanType">Loan Type</Label>
+              <Select onValueChange={(value) => setValue("loanType", value)}>
+                <SelectTrigger className={errors.loanType ? "border-destructive" : ""}>
+                  <SelectValue placeholder="Select loan type" />
+                </SelectTrigger>
+                <SelectContent className="bg-background z-50">
+                  <SelectItem value="home-loan">Home Loan</SelectItem>
+                  <SelectItem value="personal-loan">Personal Loan</SelectItem>
+                  <SelectItem value="business-loan">Business Loan</SelectItem>
+                  <SelectItem value="educational-loan">Educational Loan</SelectItem>
+                </SelectContent>
+              </Select>
+              {errors.loanType && (
+                <p className="text-sm text-destructive">{errors.loanType.message}</p>
+              )}
+            </div>
+
+            {selectedLoanType === "home-loan" && (
+              <>
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Personal Information</h3>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="name">Full Name</Label>
+                    <Input
+                      id="name"
+                      {...register("name")}
+                      placeholder="John Doe"
+                      className={errors.name ? "border-destructive" : ""}
+                    />
+                    {errors.name && (
+                      <p className="text-sm text-destructive">{errors.name.message}</p>
+                    )}
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="age">Age</Label>
+                      <Input
+                        id="age"
+                        type="number"
+                        {...register("age", { valueAsNumber: true })}
+                        placeholder="30"
+                        className={errors.age ? "border-destructive" : ""}
+                      />
+                      {errors.age && (
+                        <p className="text-sm text-destructive">{errors.age.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="gender">Gender</Label>
+                      <Select onValueChange={(value) => setValue("gender", value)}>
+                        <SelectTrigger className={errors.gender ? "border-destructive" : ""}>
+                          <SelectValue placeholder="Select gender" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-background z-50">
+                          <SelectItem value="male">Male</SelectItem>
+                          <SelectItem value="female">Female</SelectItem>
+                          <SelectItem value="non-binary">Non-binary</SelectItem>
+                          <SelectItem value="prefer-not-to-say">Prefer not to say</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {errors.gender && (
+                        <p className="text-sm text-destructive">{errors.gender.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="aadharId">Aadhar ID</Label>
+                    <Input
+                      id="aadharId"
+                      {...register("aadharId")}
+                      placeholder="1234-5678-9012"
+                      maxLength={14}
+                      className={errors.aadharId ? "border-destructive" : ""}
+                    />
+                    {errors.aadharId && (
+                      <p className="text-sm text-destructive">{errors.aadharId.message}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="annualIncome">Annual Income (₹)</Label>
+                    <Input
+                      id="annualIncome"
+                      type="number"
+                      {...register("annualIncome", { valueAsNumber: true })}
+                      placeholder="75000"
+                      className={errors.annualIncome ? "border-destructive" : ""}
+                    />
+                    {errors.annualIncome && (
+                      <p className="text-sm text-destructive">{errors.annualIncome.message}</p>
+                    )}
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="loanAmount">Loan Amount (₹)</Label>
+                      <Input
+                        id="loanAmount"
+                        type="number"
+                        {...register("loanAmount", { valueAsNumber: true })}
+                        placeholder="250000"
+                        className={errors.loanAmount ? "border-destructive" : ""}
+                      />
+                      {errors.loanAmount && (
+                        <p className="text-sm text-destructive">{errors.loanAmount.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="loanTerm">Loan Term (months)</Label>
+                      <Input
+                        id="loanTerm"
+                        type="number"
+                        {...register("loanTerm", { valueAsNumber: true })}
+                        placeholder="360"
+                        className={errors.loanTerm ? "border-destructive" : ""}
+                      />
+                      {errors.loanTerm && (
+                        <p className="text-sm text-destructive">{errors.loanTerm.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="cibilScore">CIBIL Score</Label>
+                    <Input
+                      id="cibilScore"
+                      type="number"
+                      {...register("cibilScore", { valueAsNumber: true })}
+                      placeholder="750"
+                      className={errors.cibilScore ? "border-destructive" : ""}
+                    />
+                    {errors.cibilScore && (
+                      <p className="text-sm text-destructive">{errors.cibilScore.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Property Details</h3>
+                  
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="propertyValue">Property Value (₹)</Label>
+                      <Input
+                        id="propertyValue"
+                        type="number"
+                        {...register("propertyValue", { valueAsNumber: true })}
+                        placeholder="300000"
+                        className={errors.propertyValue ? "border-destructive" : ""}
+                      />
+                      {errors.propertyValue && (
+                        <p className="text-sm text-destructive">{errors.propertyValue.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="downPayment">Down Payment (₹)</Label>
+                      <Input
+                        id="downPayment"
+                        type="number"
+                        {...register("downPayment", { valueAsNumber: true })}
+                        placeholder="50000"
+                        className={errors.downPayment ? "border-destructive" : ""}
+                      />
+                      {errors.downPayment && (
+                        <p className="text-sm text-destructive">{errors.downPayment.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="monthlyExpenses">Monthly Expenses (₹)</Label>
+                    <Input
+                      id="monthlyExpenses"
+                      type="number"
+                      {...register("monthlyExpenses", { valueAsNumber: true })}
+                      placeholder="2000"
+                      className={errors.monthlyExpenses ? "border-destructive" : ""}
+                    />
+                    {errors.monthlyExpenses && (
+                      <p className="text-sm text-destructive">{errors.monthlyExpenses.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Document Upload</h3>
+                  <p className="text-sm text-muted-foreground">Upload required documents (Property documents, Income proof, ID proof)</p>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="documents">Upload Documents</Label>
+                    <div className="relative">
+                      <Input
+                        id="documents"
+                        type="file"
+                        multiple
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        onChange={handleFileChange}
+                        className="cursor-pointer"
+                      />
+                      {uploadedFiles.length > 0 && (
+                        <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                          <Upload className="h-4 w-4" />
+                          <span>{uploadedFiles.length} file(s) selected</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">Accepted formats: PDF, JPG, PNG (Max 10MB per file)</p>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {selectedLoanType === "personal-loan" && (
+              <>
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Personal Information</h3>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="name">Full Name</Label>
+                    <Input
+                      id="name"
+                      {...register("name")}
+                      placeholder="John Doe"
+                      className={errors.name ? "border-destructive" : ""}
+                    />
+                    {errors.name && (
+                      <p className="text-sm text-destructive">{errors.name.message}</p>
+                    )}
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="age">Age</Label>
+                      <Input
+                        id="age"
+                        type="number"
+                        {...register("age", { valueAsNumber: true })}
+                        placeholder="30"
+                        className={errors.age ? "border-destructive" : ""}
+                      />
+                      {errors.age && (
+                        <p className="text-sm text-destructive">{errors.age.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="gender">Gender</Label>
+                      <Select onValueChange={(value) => setValue("gender", value)}>
+                        <SelectTrigger className={errors.gender ? "border-destructive" : ""}>
+                          <SelectValue placeholder="Select gender" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-background z-50">
+                          <SelectItem value="male">Male</SelectItem>
+                          <SelectItem value="female">Female</SelectItem>
+                          <SelectItem value="non-binary">Non-binary</SelectItem>
+                          <SelectItem value="prefer-not-to-say">Prefer not to say</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {errors.gender && (
+                        <p className="text-sm text-destructive">{errors.gender.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="aadharId">Aadhar ID</Label>
+                    <Input
+                      id="aadharId"
+                      {...register("aadharId")}
+                      placeholder="1234-5678-9012"
+                      maxLength={14}
+                      className={errors.aadharId ? "border-destructive" : ""}
+                    />
+                    {errors.aadharId && (
+                      <p className="text-sm text-destructive">{errors.aadharId.message}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="annualIncome">Annual Income (₹)</Label>
+                    <Input
+                      id="annualIncome"
+                      type="number"
+                      {...register("annualIncome", { valueAsNumber: true })}
+                      placeholder="60000"
+                      className={errors.annualIncome ? "border-destructive" : ""}
+                    />
+                    {errors.annualIncome && (
+                      <p className="text-sm text-destructive">{errors.annualIncome.message}</p>
+                    )}
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="loanAmount">Loan Amount (₹)</Label>
+                      <Input
+                        id="loanAmount"
+                        type="number"
+                        {...register("loanAmount", { valueAsNumber: true })}
+                        placeholder="15000"
+                        className={errors.loanAmount ? "border-destructive" : ""}
+                      />
+                      {errors.loanAmount && (
+                        <p className="text-sm text-destructive">{errors.loanAmount.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="loanTerm">Loan Term (months)</Label>
+                      <Input
+                        id="loanTerm"
+                        type="number"
+                        {...register("loanTerm", { valueAsNumber: true })}
+                        placeholder="36"
+                        className={errors.loanTerm ? "border-destructive" : ""}
+                      />
+                      {errors.loanTerm && (
+                        <p className="text-sm text-destructive">{errors.loanTerm.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="cibilScore">CIBIL Score</Label>
+                    <Input
+                      id="cibilScore"
+                      type="number"
+                      {...register("cibilScore", { valueAsNumber: true })}
+                      placeholder="720"
+                      className={errors.cibilScore ? "border-destructive" : ""}
+                    />
+                    {errors.cibilScore && (
+                      <p className="text-sm text-destructive">{errors.cibilScore.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Financial Details</h3>
+                  
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="monthlyExpenses">Monthly Expenses (₹)</Label>
+                      <Input
+                        id="monthlyExpenses"
+                        type="number"
+                        {...register("monthlyExpenses", { valueAsNumber: true })}
+                        placeholder="1500"
+                        className={errors.monthlyExpenses ? "border-destructive" : ""}
+                      />
+                      {errors.monthlyExpenses && (
+                        <p className="text-sm text-destructive">{errors.monthlyExpenses.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="existingEmis">Existing EMIs (₹)</Label>
+                      <Input
+                        id="existingEmis"
+                        type="number"
+                        {...register("existingEmis", { valueAsNumber: true })}
+                        placeholder="500"
+                        className={errors.existingEmis ? "border-destructive" : ""}
+                      />
+                      {errors.existingEmis && (
+                        <p className="text-sm text-destructive">{errors.existingEmis.message}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Document Upload</h3>
+                  <p className="text-sm text-muted-foreground">Upload required documents (Income proof, ID proof)</p>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="documents-personal">Upload Documents</Label>
+                    <div className="relative">
+                      <Input
+                        id="documents-personal"
+                        type="file"
+                        multiple
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        onChange={handleFileChange}
+                        className="cursor-pointer"
+                      />
+                      {uploadedFiles.length > 0 && (
+                        <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                          <Upload className="h-4 w-4" />
+                          <span>{uploadedFiles.length} file(s) selected</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">Accepted formats: PDF, JPG, PNG (Max 10MB per file)</p>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {selectedLoanType === "business-loan" && (
+              <>
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Personal Information</h3>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="name">Full Name</Label>
+                    <Input
+                      id="name"
+                      {...register("name")}
+                      placeholder="John Doe"
+                      className={errors.name ? "border-destructive" : ""}
+                    />
+                    {errors.name && (
+                      <p className="text-sm text-destructive">{errors.name.message}</p>
+                    )}
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="age">Age</Label>
+                      <Input
+                        id="age"
+                        type="number"
+                        {...register("age", { valueAsNumber: true })}
+                        placeholder="35"
+                        className={errors.age ? "border-destructive" : ""}
+                      />
+                      {errors.age && (
+                        <p className="text-sm text-destructive">{errors.age.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="gender">Gender</Label>
+                      <Select onValueChange={(value) => setValue("gender", value)}>
+                        <SelectTrigger className={errors.gender ? "border-destructive" : ""}>
+                          <SelectValue placeholder="Select gender" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-background z-50">
+                          <SelectItem value="male">Male</SelectItem>
+                          <SelectItem value="female">Female</SelectItem>
+                          <SelectItem value="non-binary">Non-binary</SelectItem>
+                          <SelectItem value="prefer-not-to-say">Prefer not to say</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {errors.gender && (
+                        <p className="text-sm text-destructive">{errors.gender.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="aadharId">Aadhar ID</Label>
+                    <Input
+                      id="aadharId"
+                      {...register("aadharId")}
+                      placeholder="1234-5678-9012"
+                      maxLength={14}
+                      className={errors.aadharId ? "border-destructive" : ""}
+                    />
+                    {errors.aadharId && (
+                      <p className="text-sm text-destructive">{errors.aadharId.message}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="annualIncome">Annual Income (₹)</Label>
+                    <Input
+                      id="annualIncome"
+                      type="number"
+                      {...register("annualIncome", { valueAsNumber: true })}
+                      placeholder="80000"
+                      className={errors.annualIncome ? "border-destructive" : ""}
+                    />
+                    {errors.annualIncome && (
+                      <p className="text-sm text-destructive">{errors.annualIncome.message}</p>
+                    )}
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="loanAmount">Loan Amount (₹)</Label>
+                      <Input
+                        id="loanAmount"
+                        type="number"
+                        {...register("loanAmount", { valueAsNumber: true })}
+                        placeholder="100000"
+                        className={errors.loanAmount ? "border-destructive" : ""}
+                      />
+                      {errors.loanAmount && (
+                        <p className="text-sm text-destructive">{errors.loanAmount.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="loanTerm">Loan Term (months)</Label>
+                      <Input
+                        id="loanTerm"
+                        type="number"
+                        {...register("loanTerm", { valueAsNumber: true })}
+                        placeholder="60"
+                        className={errors.loanTerm ? "border-destructive" : ""}
+                      />
+                      {errors.loanTerm && (
+                        <p className="text-sm text-destructive">{errors.loanTerm.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="cibilScore">CIBIL Score</Label>
+                    <Input
+                      id="cibilScore"
+                      type="number"
+                      {...register("cibilScore", { valueAsNumber: true })}
+                      placeholder="750"
+                      className={errors.cibilScore ? "border-destructive" : ""}
+                    />
+                    {errors.cibilScore && (
+                      <p className="text-sm text-destructive">{errors.cibilScore.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Business Details</h3>
+                  
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="businessRevenue">Business Revenue (₹)</Label>
+                      <Input
+                        id="businessRevenue"
+                        type="number"
+                        {...register("businessRevenue", { valueAsNumber: true })}
+                        placeholder="200000"
+                        className={errors.businessRevenue ? "border-destructive" : ""}
+                      />
+                      {errors.businessRevenue && (
+                        <p className="text-sm text-destructive">{errors.businessRevenue.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="businessProfit">Business Profit (₹)</Label>
+                      <Input
+                        id="businessProfit"
+                        type="number"
+                        {...register("businessProfit", { valueAsNumber: true })}
+                        placeholder="50000"
+                        className={errors.businessProfit ? "border-destructive" : ""}
+                      />
+                      {errors.businessProfit && (
+                        <p className="text-sm text-destructive">{errors.businessProfit.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="commercialPropertyValue">Commercial Property Value (₹)</Label>
+                    <Input
+                      id="commercialPropertyValue"
+                      type="number"
+                      {...register("commercialPropertyValue", { valueAsNumber: true })}
+                      placeholder="500000"
+                      className={errors.commercialPropertyValue ? "border-destructive" : ""}
+                    />
+                    {errors.commercialPropertyValue && (
+                      <p className="text-sm text-destructive">{errors.commercialPropertyValue.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Document Upload</h3>
+                  <p className="text-sm text-muted-foreground">Upload required documents (Business registration, Financial statements, Tax returns)</p>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="documents-business">Upload Documents</Label>
+                    <div className="relative">
+                      <Input
+                        id="documents-business"
+                        type="file"
+                        multiple
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        onChange={handleFileChange}
+                        className="cursor-pointer"
+                      />
+                      {uploadedFiles.length > 0 && (
+                        <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                          <Upload className="h-4 w-4" />
+                          <span>{uploadedFiles.length} file(s) selected</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">Accepted formats: PDF, JPG, PNG (Max 10MB per file)</p>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {selectedLoanType === "educational-loan" && (
+              <>
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Personal Information</h3>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="name">Full Name</Label>
+                    <Input
+                      id="name"
+                      {...register("name")}
+                      placeholder="John Doe"
+                      className={errors.name ? "border-destructive" : ""}
+                    />
+                    {errors.name && (
+                      <p className="text-sm text-destructive">{errors.name.message}</p>
+                    )}
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="age">Age</Label>
+                      <Input
+                        id="age"
+                        type="number"
+                        {...register("age", { valueAsNumber: true })}
+                        placeholder="22"
+                        className={errors.age ? "border-destructive" : ""}
+                      />
+                      {errors.age && (
+                        <p className="text-sm text-destructive">{errors.age.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="gender">Gender</Label>
+                      <Select onValueChange={(value) => setValue("gender", value)}>
+                        <SelectTrigger className={errors.gender ? "border-destructive" : ""}>
+                          <SelectValue placeholder="Select gender" />
+                        </SelectTrigger>
+                        <SelectContent className="bg-background z-50">
+                          <SelectItem value="male">Male</SelectItem>
+                          <SelectItem value="female">Female</SelectItem>
+                          <SelectItem value="non-binary">Non-binary</SelectItem>
+                          <SelectItem value="prefer-not-to-say">Prefer not to say</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {errors.gender && (
+                        <p className="text-sm text-destructive">{errors.gender.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="aadharId">Aadhar ID</Label>
+                    <Input
+                      id="aadharId"
+                      {...register("aadharId")}
+                      placeholder="1234-5678-9012"
+                      maxLength={14}
+                      className={errors.aadharId ? "border-destructive" : ""}
+                    />
+                    {errors.aadharId && (
+                      <p className="text-sm text-destructive">{errors.aadharId.message}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="annualIncome">Annual Income (₹)</Label>
+                    <Input
+                      id="annualIncome"
+                      type="number"
+                      {...register("annualIncome", { valueAsNumber: true })}
+                      placeholder="40000"
+                      className={errors.annualIncome ? "border-destructive" : ""}
+                    />
+                    {errors.annualIncome && (
+                      <p className="text-sm text-destructive">{errors.annualIncome.message}</p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="cibilScore">CIBIL Score</Label>
+                    <Input
+                      id="cibilScore"
+                      type="number"
+                      {...register("cibilScore", { valueAsNumber: true })}
+                      placeholder="700"
+                      className={errors.cibilScore ? "border-destructive" : ""}
+                    />
+                    {errors.cibilScore && (
+                      <p className="text-sm text-destructive">{errors.cibilScore.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Education Details</h3>
+                  
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="tuitionFee">Tuition Fee (₹)</Label>
+                      <Input
+                        id="tuitionFee"
+                        type="number"
+                        {...register("tuitionFee", { valueAsNumber: true })}
+                        placeholder="30000"
+                        className={errors.tuitionFee ? "border-destructive" : ""}
+                      />
+                      {errors.tuitionFee && (
+                        <p className="text-sm text-destructive">{errors.tuitionFee.message}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="courseDuration">Course Duration (months)</Label>
+                      <Input
+                        id="courseDuration"
+                        type="number"
+                        {...register("courseDuration", { valueAsNumber: true })}
+                        placeholder="48"
+                        className={errors.courseDuration ? "border-destructive" : ""}
+                      />
+                      {errors.courseDuration && (
+                        <p className="text-sm text-destructive">{errors.courseDuration.message}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="studentExpenses">Student Expenses (₹)</Label>
+                    <Input
+                      id="studentExpenses"
+                      type="number"
+                      {...register("studentExpenses", { valueAsNumber: true })}
+                      placeholder="5000"
+                      className={errors.studentExpenses ? "border-destructive" : ""}
+                    />
+                    {errors.studentExpenses && (
+                      <p className="text-sm text-destructive">{errors.studentExpenses.message}</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-foreground">Document Upload</h3>
+                  <p className="text-sm text-muted-foreground">Upload required documents (Admission letter, Fee structure, Academic records)</p>
+                  
+                  <div className="space-y-2">
+                    <Label htmlFor="documents-education">Upload Documents</Label>
+                    <div className="relative">
+                      <Input
+                        id="documents-education"
+                        type="file"
+                        multiple
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        onChange={handleFileChange}
+                        className="cursor-pointer"
+                      />
+                      {uploadedFiles.length > 0 && (
+                        <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                          <Upload className="h-4 w-4" />
+                          <span>{uploadedFiles.length} file(s) selected</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="text-xs text-muted-foreground">Accepted formats: PDF, JPG, PNG (Max 10MB per file)</p>
+                  </div>
+                </div>
+              </>
+            )}
+
+            <Button
+              type="submit" 
+              className="w-full" 
+              size="lg"
+              disabled={isSubmitting}
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Processing your request...
+                </>
+              ) : (
+                "Submit Application"
+              )}
+            </Button>
+          </form>
+        </Card>
+      </main>
+    </div>
+  );
+};
+
+export default LoanApplication;
